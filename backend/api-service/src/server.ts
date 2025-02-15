@@ -12,15 +12,15 @@ app.get('/health', (req: any, res: any) => {
   res.status(200).json({ status: 'healthy' });
 });
 
-// Start the interval printing
-const startInterval = () => {
-  setInterval(() => {
-    console.log('Server is running - checking in every 5 seconds!');
-  }, 5000);
-};
+// // Start the interval printing
+// const startInterval = () => {
+//   setInterval(() => {
+//     console.log('Server is running - checking in every 5 seconds!');
+//   }, 5000);
+// };
 
 // Start server
 app.listen(port, () => {
   console.log(`Server started on port ${port}`);
-  startInterval();
+  // startInterval();
 });

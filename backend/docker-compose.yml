@@ -5,7 +5,7 @@ services:
     build:
       context: ./api-service
     ports:
-      - "3000:3000"
+      - "3000:3001"
     env_file: .env
     volumes:
       - ./api-service:/app/api-service
@@ -23,7 +23,7 @@ services:
     build:
       context: ./data-collector
     ports:
-      - "3002:3000"
+      - "3002:3001"
     env_file: .env
     volumes:
       - ./data-collector:/app/data-collector
@@ -41,7 +41,7 @@ services:
     build:
       context: ./worker-service
     ports:
-      - "3001:3000"
+      - "3001:3001"
     env_file: .env
     volumes:
       - ./worker-service:/app/worker-service
