@@ -1,0 +1,22 @@
+{
+    "name": "trading-system",
+    "private": true,
+    "workspaces": [
+        "api-service",
+        "worker-service",
+        "data-collector"
+    ],
+    "scripts": {
+        "build": "npm run build --workspaces",
+        "start": "npm run start --workspaces"
+    },
+    "devDependencies": {
+        "@types/node": "^18.15.11",
+        "ts-node-dev": "^2.0.0",
+        "typescript": "^5.0.4"
+    },
+    "dependencies": {
+        "@types/express": "^5.0.0",
+        "express": "^4.21.2"
+    }
+}

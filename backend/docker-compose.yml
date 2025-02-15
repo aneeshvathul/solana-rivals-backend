@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  api-service:
+    build:
+      context: ./api-service
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - ./api-service:/app/api-service
+      - /app/api-service/node_modules
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      - NODE_ENV=development
+
+  data-collector:
+    build:
+      context: ./data-collector
+    ports:
+      - "3002:3000"
+    env_file: .env
+    volumes:
+      - ./data-collector:/app/data-collector
+      - /app/data-collector/node_modules
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "./healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      - NODE_ENV=development
+
+  worker-service:
+    build:
+      context: ./worker-service
+    ports:
+      - "3001:3000"
+    env_file: .env
+    volumes:
+      - ./worker-service:/app/worker-service
+      - /app/worker-service/node_modules
+    depends_on:
+      - data-collector
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "./healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      - NODE_ENV=development
+
+networks:
+  default:
+    driver: bridge
