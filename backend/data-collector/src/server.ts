@@ -1,9 +1,12 @@
 import express from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import dotenv from 'dotenv';
+dotenv.config({ path: '../.env' });
 
 const app = express();
-const port = 3001; // Changed to match docker-compose
+const port = 3001; // Data collector service port
+const RPC_URLS = process.env.RPC_URLS!.split(',');
 
 // Create Supabase client
 const supabase = createClient(
@@ -93,7 +96,6 @@ const WALLET_ADDRESSES = [
 ];
 
 // Add constants
-const RPC_ENDPOINT = "https://mainnet.helius-rpc.com/?api-key=a8146b9b-075a-4f1c-ac30-56df5d935584";
 const MIN_SOL_AMOUNT = 1.0;
 const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -301,7 +303,7 @@ const startTrendingTokenInterval = () => {
 
     } catch (error) {
     }
-  }, 60000);
+  }, 120000);
 };
 
 // Add the whale token interval function
@@ -325,7 +327,7 @@ const startWhaleTokenInterval = () => {
 
     } catch (error) {
     }
-  }, 600000);
+  }, 180000);
 };
 
 // Modify the TransactionFetcher class
@@ -336,7 +338,7 @@ class TransactionFetcher {
   private tokenFrequencies: Map<string, TokenFrequency> = new Map();
 
   constructor() {
-    this.connection = new Connection(RPC_ENDPOINT, {
+    this.connection = new Connection(RPC_URLS[Math.floor(Math.random() * RPC_URLS.length)], {
       commitment: 'confirmed',
       confirmTransactionInitialTimeout: 60000
     });
