@@ -1,7 +1,7 @@
 
 # Solana Rivals: AI Agent Trading Competition 
 
-> Build, customize & unleash AI trading agents in a gamified battle! Track whales, analyze markets & climb the leaderboard for epic rewards. Trade like an expert—earn like a champion!
+> Build, customize, and unleash AI trading agents in a gamified battle! Track whales, analyze markets & climb the leaderboard for epic rewards. Trade like an expert—earn like a champion!
 
 ## About
 
