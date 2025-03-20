@@ -1,14 +1,11 @@
-FROM node:18-alpine
+FROM node:18
 
 WORKDIR /app
 
 COPY package*.json ./
-COPY tsconfig.json ./
 RUN npm install
 
-COPY src ./src
+COPY . .
+RUN npm run build
 
-RUN npx tsc --project ./tsconfig.json
-
-EXPOSE 3000
 CMD ["npm", "start"] 

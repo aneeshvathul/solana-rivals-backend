@@ -1,10 +1,5 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-// import { Tool } from "@langchain/core/tools";
 import { ChatOpenAI } from "@langchain/openai";
-// import { createReactAgent } from "@langchain/langgraph/prebuilt";
-// import { MemorySaver } from "@langchain/langgraph";
-// import { Keypair } from '@solana/web3.js';
-// import bs58 from 'bs58';
 import { makeTrade, getPrice, getTokenBalance, getTokenDecimals } from "./AgentTools";
 import dotenv from 'dotenv';
 import { createClient, PostgrestError } from '@supabase/supabase-js';
@@ -23,8 +18,8 @@ const iv = Buffer.from(process.env.CRYPT_IV!, 'hex');
 const NUM_SLOTS: number = 3;
 const INPUT_ADDRESS: string = "So11111111111111111111111111111111111111112";
 const LAMPORTS_PER_SOL: number = 1e9;
-const BUY_AMOUNT_LAMPORTS: number = 1000000; // Already in lamports
-const SLIPPAGE: number = 1500;
+const BUY_AMOUNT_LAMPORTS: number = 2000000; // Already in lamports
+const SLIPPAGE: number = 200;
 const RPC_URLS = process.env.RPC_URLS!.split(',');
 
 
@@ -39,27 +34,34 @@ interface SlotData {
 
 // Add interface for agent preferences
 interface AgentPreferences {
-    liquidity: { value: number; bin: string };
-    history: { value: number; bin: string };
-    marketCap: { value: number; bin: string };
-    sentiment: { value: number; bin: string };
-    whale: { value: number; bin: string };
-    risk: { value: number; bin: string };
+    liquidity: { min: number; max: number; importance: number };
+    age: { min: number; importance: number };
+    volume: { min: number; max: number; importance: number };
+    marketCap: { min: number; importance: number };
+    sentiment: { importance: number };
+    whale: { importance: number };
+    sellFloor: number;
+    sellCeiling: number;
 }
 
 // Add these interfaces at the top of the file with other interfaces
 interface TokenData {
-    token_id: string;
+    token_id?: string;
     token_address: string;
-    price: number;
-    volume_24_hr: number;
-    liquidity: number;
-    market_cap: number;
+    price: number | null;
+    volume_24_hr: number | null;
+    liquidity: number | null;
+    market_cap: number | null;
     last_hour_buys: number;
     last_hour_sells: number;
     last_5min_buys: number;
     last_5min_sells: number;
     description: string;
+    "5min_price_change": number;
+    "1hour_price_change": number;
+    "6hour_price_change": number;
+    "24hour_price_change": number;
+    age_hours: number;
 }
 
 interface WhaleTokenData {
@@ -69,8 +71,8 @@ interface WhaleTokenData {
 }
 
 const supabase = createClient(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_KEY!
+    process.env.SUPABASE_URL || '',
+    process.env.SUPABASE_KEY || ''
 );
 
   // Custom memory saver class that limits cached messages
@@ -117,24 +119,24 @@ function decrypt(text: string): string {
     return decrypted.toString();
 }
 
-  function validateEnvironment(): void {
-    const missingVars: string[] = [];
+function validateEnvironment(): void {
+const missingVars: string[] = [];
 
-    const requiredVars = ["OPENAI_API_KEY", "RPC_URLS"];
-    requiredVars.forEach(varName => {
-      if (!process.env[varName]) {
-        missingVars.push(varName);
-      }
-    });
-
-    if (missingVars.length > 0) {
-      console.error("Error: Required environment variables are not set");
-      missingVars.forEach(varName => {
-        console.error(`${varName}=your_${varName.toLowerCase()}_here`);
-      });
-      process.exit(1);
+const requiredVars = ["OPENAI_API_KEY", "RPC_URLS"];
+requiredVars.forEach(varName => {
+    if (!process.env[varName]) {
+    missingVars.push(varName);
     }
-  }
+});
+
+if (missingVars.length > 0) {
+    console.error("Error: Required environment variables are not set");
+    missingVars.forEach(varName => {
+    console.error(`${varName}=your_${varName.toLowerCase()}_here`);
+    });
+    process.exit(1);
+}
+}
 
 type Agent = {
     id: string;
@@ -160,16 +162,8 @@ export class AgentManager {
                 temperature: 0.7,
             });
             
-            // const memory = new LimitedMemorySaver(10);
-  
-            // const agentBot = createReactAgent({
-            //     llm,
-            //     tools: [],
-            //     checkpointSaver: memory,
-            // });
             const agentBot = llm;
 
-  
             const agent: Agent = {
                 id: `${userId}-${Date.now()}`,
                 userId,
@@ -250,18 +244,20 @@ export class AgentManager {
             const { data: agentData, error } = await supabase
                 .from('agents')
                 .select(`
-                    liquidity_num,
-                    liquidity_bin,
-                    history_num,
-                    history_bin,
-                    market_cap_num,
-                    market_cap_bin,
-                    sentiment_num,
-                    sentiment_bin,
-                    whale_num,
-                    whale_bin,
-                    risk_num,
-                    risk_bin
+                    liquidity_min,
+                    liquidity_max,
+                    liquidity_importance,
+                    age_min,
+                    age_importance,
+                    volume_min,
+                    volume_max,
+                    volume_importance,
+                    market_cap_min,
+                    market_cap_importance,
+                    sentiment_importance,
+                    whale_importance,
+                    sell_floor,
+                    sell_ceiling   
                 `)
                 .eq('user_id', agent.userId)
                 .single();
@@ -276,30 +272,14 @@ export class AgentManager {
 
             // Store the data in the agent instance for use in trading logic
             const agentPreferences = {
-                liquidity: {
-                    value: agentData.liquidity_num,
-                    bin: agentData.liquidity_bin
-                },
-                history: {
-                    value: agentData.history_num,
-                    bin: agentData.history_bin
-                },
-                marketCap: {
-                    value: agentData.market_cap_num,
-                    bin: agentData.market_cap_bin
-                },
-                sentiment: {
-                    value: agentData.sentiment_num,
-                    bin: agentData.sentiment_bin
-                },
-                whale: {
-                    value: agentData.whale_num,
-                    bin: agentData.whale_bin
-                },
-                risk: {
-                    value: agentData.risk_num,
-                    bin: agentData.risk_bin
-                }
+                liquidity: { min: agentData.liquidity_min, max: agentData.liquidity_max, importance: agentData.liquidity_importance },
+                age: { min: agentData.age_min, importance: agentData.age_importance },
+                volume: { min: agentData.volume_min, max: agentData.volume_max, importance: agentData.volume_importance },
+                marketCap: { min: agentData.market_cap_min, importance: agentData.market_cap_importance },
+                sentiment: { importance: agentData.sentiment_importance },
+                whale: { importance: agentData.whale_importance },
+                sellFloor: agentData.sell_floor,
+                sellCeiling: agentData.sell_ceiling
             };
 
             // Fetch slot data for this agent
@@ -346,20 +326,6 @@ export class AgentManager {
                 }
             }
 
-            // Execute trade with the fetched preferences
-            // const tradeParams = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v So11111111111111111111111111111111111111112 500000 1500";
-            // const [inputAddress, outputAddress, amountStr, slippageStr] = tradeParams.split(' ');
-            
-            // await makeTrade(
-            //     inputAddress,
-            //     outputAddress,
-            //     parseInt(amountStr),
-            //     parseInt(slippageStr)
-            // ).catch(error => {
-            //     console.error('Error in makeTrade:', error);
-            //     process.exit(1);
-            // });
-
         } catch (error: any) {
             console.error("Error:", error.message || error);
         }
@@ -377,11 +343,8 @@ export class AgentManager {
 
         try {
             if (slot.state) {
-              console.log("Risk value: ", preferences.risk.value);
-                // const sellCeiling = 1.25 * preferences.risk.value / 100 + 1.25;
-                const sellCeiling = 1.05
-                // const sellFloor = -0.5 * preferences.risk.value / 100 + 0.75;
-                const sellFloor = 0.95
+                const sellFloor = preferences.sellFloor;
+                const sellCeiling = preferences.sellCeiling;
                 console.log("Sell ceiling: ", sellCeiling, "Sell floor: ", sellFloor);
                 const currentPrice = await getPrice(slot.buy_address);
                 
@@ -448,8 +411,15 @@ export class AgentManager {
                             wallet
                         );
 
+                        const newCurrentPrice = await getPrice(slot.buy_address);
+                
+                        if (newCurrentPrice === null) {
+                            console.log(`Could not fetch current price for token ${slot.buy_address}`);
+                            return;
+                        }
+
                         // Calculate profit using original amount for accuracy
-                        const currentTokenValue = currentPrice * slot.buy_amount * LAMPORTS_PER_SOL;
+                        const currentTokenValue = newCurrentPrice * slot.buy_amount * LAMPORTS_PER_SOL;
                         const profit = currentTokenValue - BUY_AMOUNT_LAMPORTS;
 
                         // Get and update total profit
@@ -522,7 +492,12 @@ export class AgentManager {
                         last_hour_sells,
                         last_5min_buys,
                         last_5min_sells,
-                        description
+                        description,
+                        5min_price_change,
+                        1hour_price_change,
+                        6hour_price_change,
+                        24hour_price_change,
+                        age_hours
                     `) as { data: TokenData[] | null; error: PostgrestError | null };
 
                 if (tokenError) {
@@ -534,28 +509,73 @@ export class AgentManager {
                     !excludedTokens.includes(token.token_address)
                 ) || [];
 
-                const { data: whaleData, error: whaleError } = await supabase
-                    .from('whale_token_data')
-                    .select(`
-                        token_address,
-                        count,
-                        volume
-                    `) as { data: WhaleTokenData[] | null; error: PostgrestError | null };
-
-                if (whaleError) {
-                    throw new Error(`Error fetching whale data: ${whaleError.message}`);
+                // If no unique tokens available, skip
+                if (availableTokens.length === 0) {
+                    console.log("No unique tokens available for purchase");
+                    return;
                 }
 
-                // Store filtered data in JSON format
-                const tokenDataJson = JSON.stringify(availableTokens);
-                const whaleDataJson = JSON.stringify(whaleData || []);
+                // Add a helper function for filtering tokens
+                function filterTokensByPreferences(tokens: TokenData[], preferences: AgentPreferences): TokenData[] {
+                    return tokens.filter(token => {
+                        // Skip tokens with missing required data
+                        if (!token.liquidity || !token.volume_24_hr || !token.market_cap || !token.age_hours) {
+                            return false;
+                        }
 
-                const systemPrompt = `You are a trading agent. Given token data and preferences, output only a valid Solana token address to buy, or "SKIP". 
-                    Consider diversification as a plus but prioritize token quality. Use all fields in the JSON data for analysis.`;
+                        // Check against minimum requirements
+                        const meetsLiquidity = token.liquidity >= preferences.liquidity.min && 
+                                              token.liquidity <= preferences.liquidity.max;
+                        
+                        const meetsVolume = token.volume_24_hr >= preferences.volume.min && 
+                                            token.volume_24_hr <= preferences.volume.max;
+                        
+                        const meetsMarketCap = token.market_cap >= preferences.marketCap.min;
+                        
+                        const meetsAge = token.age_hours >= preferences.age.min;
 
-                const humanPrompt = `Preferences: ${JSON.stringify(preferences)}
-                    Tokens: ${tokenDataJson}
-                    Whale data: ${whaleDataJson}
+                        return meetsLiquidity && meetsVolume && meetsMarketCap && meetsAge;
+                    });
+                }
+
+                // Filter tokens based on user preferences
+                const filteredTokens = filterTokensByPreferences(availableTokens, preferences);
+                
+                console.log(`Filtered from ${availableTokens.length} to ${filteredTokens.length} tokens based on preferences`);
+
+                if (filteredTokens.length === 0) {
+                    console.log("No tokens match preferences");
+                    return;
+                }
+
+                const systemPrompt = `You are a trading agent whose aim is to maximize profit while maintaining a diverse portfolio. 
+                Given token data, output only a valid Solana token address to buy from the available tokens, or "SKIP" if no good options exist.
+                Output "SKIP" unless the token shows very strong potential for profit.`;
+
+                const humanPrompt = 
+                    `Importance Metrics (out of 100):
+                    Liquidity: ${preferences.liquidity.importance}
+                    Age: ${preferences.age.importance}
+                    Volume: ${preferences.volume.importance}
+                    Market Cap: ${preferences.marketCap.importance}
+
+                    Available Tokens:
+                    ${filteredTokens.map(t => `
+                        Token: ${t.token_address}
+                        - Price: ${t.price || 'Unknown'} USD
+                        - Volume 24h: ${t.volume_24_hr || 'Unknown'} USD 
+                        - Liquidity: ${t.liquidity || 'Unknown'} USD
+                        - Market Cap: ${t.market_cap || 'Unknown'} USD
+                        - Last Hour: ${t.last_hour_buys} buys, ${t.last_hour_sells} sells
+                        - Last 5 minutes: ${t.last_5min_buys} buys, ${t.last_5min_sells} sells
+                        - Price Changes:
+                        5 minutes: ${t['5min_price_change']}%
+                        1 hour: ${t['1hour_price_change']}%
+                        6 hours: ${t['6hour_price_change']}%
+                        24 hours: ${t['24hour_price_change']}%
+                        - Age: ${t.age_hours} hours
+                    `).join('\n')}
+
                     Output only the token address or "SKIP".`;
 
                 const response = await bot.invoke([
@@ -641,4 +661,25 @@ export class AgentManager {
         const privateKey = decrypt(agentWallet.wallet_secret);
         return Keypair.fromSecretKey(bs58.decode(privateKey));
     }
+}
+
+// Get token data from data-collector
+async function getTrendingTokens(): Promise<TokenData[]> {
+  const response = await fetch('http://data-collector:3001/trending-tokens');
+  if (!response.ok) throw new Error('Failed to fetch trending tokens');
+  const data = await response.json();
+  console.log('Raw token data:', JSON.stringify(data[0], null, 2)); // Full debug output
+  return data;
+}
+
+// Get user data directly from Supabase
+async function getUserData(userId: string) {
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('id', userId)
+    .single();
+    
+  if (error) throw error;
+  return data;
 }

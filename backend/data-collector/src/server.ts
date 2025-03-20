@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import dotenv from 'dotenv';
@@ -13,6 +14,12 @@ const supabase = createClient(
   process.env.SUPABASE_URL || '',
   process.env.SUPABASE_KEY || ''
 );
+
+// Allow all requests within Docker network but block external
+app.use(cors({
+    origin: true, // Allow all origins within Docker network
+    methods: ['GET']
+}));
 
 // Interfaces
 interface TokenBoost {
@@ -82,18 +89,7 @@ interface WhaleTokenData {
   totalVolume: number;
 }
 
-const WALLET_ADDRESSES = [
-  "BXrSExYkk2BUd8zP9d7oWTTCTxX3zksahRmVZiaqJeto",
-  "9gCNRVGmWPEcUmthsd676FR3nTRwv8QkcNdphVHso48Z",
-  "6jvYtr9G5WQnKs3cFsFtKmEfkbEnUXFhBKsmZad26QPV",
-  "CWaTfG6yzJPQRY5P53nQYHdHLjCJGxpC7EWo5wzGqs3n",
-  "5ubfFGJ2z9YDx31msm1SiCUiJpQbeKAFZ4e1bbaUmTEz",
-  "CfkpaaKL72sbTt6RsfeGj1ig1bQqHHbboHxyBmJQLqMS",
-  "3LkGTjNsF2zWc2ddBPHYyEJJZKqbdHJDgfjztxnjwL5R",
-  "DQ97nu7t7fbhAtZUyam8EzNsxUzw5bgEE5seBfevPwRK",
-  "kkeMuhtCkfer15rAyxRMoAdHe2kv4ujWSjNcpm38iQh",
-  "2EkRxR6GqMcFFpBrcPrt15ashBAJxAdryjk7nDntWPSC"
-];
+const WALLET_ADDRESSES = process.env.WHALE_ADDRESSES!.split(',');
 
 // Add constants
 const MIN_SOL_AMOUNT = 1.0;
@@ -126,6 +122,22 @@ interface TokenFrequency {
   netAmount: number;
 }
 
+// Add the interfaces and function at the top with other interfaces
+interface Risk {
+  name: string;
+  value: string;
+  description: string;
+  score: number;
+  level: string;
+}
+
+interface RugcheckResponse {
+  tokenProgram: string;
+  tokenType: string;
+  risks: Risk[];
+  score: number;
+}
+
 // Database operations
 async function clearTrendingTokenData() {
   try {
@@ -150,22 +162,32 @@ async function insertTrendingTokenData(
   lastHourSells: number,
   last5minBuys: number,
   last5minSells: number,
-  description: string
+  description: string,
+  m5PriceChange: number,
+  h1PriceChange: number,
+  h6PriceChange: number,
+  h24PriceChange: number,
+  ageInHours: number
 ) {
   try {
     const { error } = await supabase
       .from('trending_token_data')
       .upsert({
         token_address: address,
-        price: price,
+        price,
         volume_24_hr: volume24h,
-        liquidity: liquidity,
+        liquidity,
         market_cap: marketCap,
         last_hour_buys: lastHourBuys,
         last_hour_sells: lastHourSells,
         last_5min_buys: last5minBuys,
         last_5min_sells: last5minSells,
-        description: description
+        description,
+        '5min_price_change': m5PriceChange,
+        '1hour_price_change': h1PriceChange,
+        '6hour_price_change': h6PriceChange,
+        '24hour_price_change': h24PriceChange,
+        age_hours: ageInHours
       }, {
         onConflict: 'token_address'
       });
@@ -220,6 +242,13 @@ async function fetchTrendingTokens(): Promise<TokenBoost[]> {
   return tokens.filter((token: TokenBoost) => token.chainId === 'solana');
 }
 
+async function fetchLatestTokens(): Promise<TokenBoost[]> {
+  const response = await fetch('https://api.dexscreener.com/token-boosts/latest/v1');
+  if (!response.ok) throw new Error(`Failed to fetch latest tokens: ${response.statusText}`);
+  const tokens = await response.json();
+  return tokens.filter((token: TokenBoost) => token.chainId === 'solana');
+}
+
 async function getTokenInfo(tokenAddress: string): Promise<TokenInfoResponse> {
   const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
   if (!response.ok) throw new Error(`Failed to fetch token info: ${response.statusText}`);
@@ -227,11 +256,21 @@ async function getTokenInfo(tokenAddress: string): Promise<TokenInfoResponse> {
 }
 
 async function getAllTrendingTokensData(): Promise<TokenData[]> {
-  const trendingTokens = await fetchTrendingTokens();
-  console.log(`Found ${trendingTokens.length} trending Solana tokens`);
+  const [trendingTokens, latestTokens] = await Promise.all([
+    fetchTrendingTokens(),
+    fetchLatestTokens()
+  ]);
+  
+  // Combine and remove duplicates based on tokenAddress
+  const uniqueTokens = Array.from(
+    new Map([...trendingTokens, ...latestTokens].map(token => [token.tokenAddress, token]))
+    .values()
+  );
+  
+  console.log(`Found ${trendingTokens.length} trending and ${latestTokens.length} latest tokens, ${uniqueTokens.length} unique`);
 
   const tokenDataList = await Promise.all(
-    trendingTokens.map(async (token) => {
+    uniqueTokens.map(async (token) => {
       try {
         const tokenInfo = await getTokenInfo(token.tokenAddress);
         return { token, tokenInfo };
@@ -244,27 +283,38 @@ async function getAllTrendingTokensData(): Promise<TokenData[]> {
   return tokenDataList.filter((item): item is TokenData => item !== null);
 }
 
-// Basic middleware
-app.use(express.json());
-
 // Health check endpoint
 app.get('/health', (req: any, res: any) => {
   res.status(200).json({ status: 'healthy' });
 });
 
-// Modified interval function
-const startTrendingTokenInterval = () => {
-  setInterval(async () => {
+// Add this helper function for delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Replace interval functions with continuous loops
+async function startTrendingTokenCollection() {
+  while (true) {
     try {
       const tokenData = await getAllTrendingTokensData();
-      
-      await clearTrendingTokenData();
+      const newTokenBatch = [];
 
       for (const data of tokenData) {
         const { token, tokenInfo } = data;
         const bestPair = tokenInfo.pairs?.[0];
         
         if (bestPair) {
+          try {
+            await delay(3000); // Keep existing delay for rug checking
+            const rugReport = await fetchRugcheckReport(token.tokenAddress);
+            if (rugReport.score > 400) {
+              console.log(`Skipping token ${token.tokenAddress} due to high rug score: ${rugReport.score}`);
+              continue;
+            }
+          } catch (error) {
+            console.error(`Error checking rug score for ${token.tokenAddress}, skipping:`, error);
+            continue;
+          }
+
           // Convert values with proper type handling
           const price = typeof bestPair.priceUsd === 'string' 
             ? parseFloat(bestPair.priceUsd) 
@@ -286,49 +336,67 @@ const startTrendingTokenInterval = () => {
           const h1 = txns.h1 || { buys: 0, sells: 0 };
           const m5 = txns.m5 || { buys: 0, sells: 0 };
 
-          await insertTrendingTokenData(
-            token.tokenAddress,
-            price || null,
-            volume || null,
-            liquidity || null,
-            marketCap || null,
-            h1.buys,
-            h1.sells,
-            m5.buys,
-            m5.sells,
-            token.description
-          );
+          const priceChange = bestPair.priceChange || {};
+          const m5PriceChange = priceChange.m5 || 0;
+          const h1PriceChange = priceChange.h1 || 0;
+          const h6PriceChange = priceChange.h6 || 0;
+          const h24PriceChange = priceChange.h24 || 0;
+
+          // Calculate age in hours
+          const ageInHours = bestPair.pairCreatedAt 
+            ? Math.floor((Date.now() - bestPair.pairCreatedAt) / (1000 * 60 * 60))
+            : 0;
+
+          // Store token data in memory instead of inserting immediately
+          newTokenBatch.push({
+            address: token.tokenAddress,
+            price: price || null,
+            volume24h: volume || null,
+            liquidity: liquidity || null,
+            marketCap: marketCap || null,
+            lastHourBuys: h1.buys,
+            lastHourSells: h1.sells,
+            last5minBuys: m5.buys,
+            last5minSells: m5.sells,
+            description: token.description,
+            m5PriceChange,
+            h1PriceChange,
+            h6PriceChange,
+            h24PriceChange,
+            ageInHours
+          });
         }
       }
 
-    } catch (error) {
-    }
-  }, 120000);
-};
-
-// Add the whale token interval function
-const startWhaleTokenInterval = () => {
-  setInterval(async () => {
-    try {
-      const fetcher = new TransactionFetcher();
-      await fetcher.analyzeMultipleWallets(WALLET_ADDRESSES);
-      
-      const tokenData = fetcher.getTokenFrequencies();
-      
-      await clearWhaleTokenData();
-
-      for (const [mint, data] of tokenData) {
-        await insertWhaleTokenData(
-          mint,
-          data.frequency,
-          data.totalVolume
-        );
+      if (newTokenBatch.length > 0) {
+        await clearTrendingTokenData();
+        for (const token of newTokenBatch) {
+          await insertTrendingTokenData(
+            token.address,
+            token.price,
+            token.volume24h,
+            token.liquidity,
+            token.marketCap,
+            token.lastHourBuys,
+            token.lastHourSells,
+            token.last5minBuys,
+            token.last5minSells,
+            token.description,
+            token.m5PriceChange,
+            token.h1PriceChange,
+            token.h6PriceChange,
+            token.h24PriceChange,
+            token.ageInHours
+          );
+        }
+        console.log(`Updated database with ${newTokenBatch.length} new tokens`);
       }
 
     } catch (error) {
+      console.error('Error in trending token collection:', error);
     }
-  }, 180000);
-};
+  }
+}
 
 // Modify the TransactionFetcher class
 class TransactionFetcher {
@@ -461,8 +529,7 @@ class TransactionFetcher {
 
 // Start server
 app.listen(port, () => {
-  startTrendingTokenInterval();
-  startWhaleTokenInterval();
+  startTrendingTokenCollection();
 });
 
 // Add error handling for uncaught exceptions
@@ -470,4 +537,60 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('unhandledRejection', (error) => {
+});
+
+// Modify fetchRugcheckReport to use authentication
+async function fetchRugcheckReport(tokenAddress: string, retries = 3): Promise<RugcheckResponse> {
+  const baseUrl = 'https://api.rugcheck.xyz/v1';
+  const url = `${baseUrl}/tokens/${tokenAddress}/report/summary`;
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      return data as RugcheckResponse;
+    } catch (error) {
+      if (i === retries - 1) {
+        console.error('Error fetching rugcheck report:', error);
+        throw error;
+      }
+      // Wait before retrying (shorter backoff)
+      await delay((i + 1) * 500); // 500ms, 1000ms, 1500ms instead of 2000ms, 4000ms, 6000ms
+    }
+  }
+  throw new Error('Max retries reached');
+}
+
+// Add a new endpoint to get trending tokens
+app.get('/trending-tokens', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('trending_token_data')
+      .select(`
+        token_address,
+        price,
+        volume_24_hr,
+        liquidity,
+        market_cap,
+        last_hour_buys,
+        last_hour_sells,
+        last_5min_buys,
+        last_5min_sells,
+        description,
+        "5min_price_change",
+        "1hour_price_change",
+        "6hour_price_change",
+        "24hour_price_change",
+        age_hours
+      `);
+    
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching trending tokens:', error);
+    res.status(500).json({ error: 'Failed to fetch trending tokens' });
+  }
 });

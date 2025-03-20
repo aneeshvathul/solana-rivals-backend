@@ -1,0 +1,32 @@
+services:
+  data-collector:
+    build: 
+      context: ./backend/data-collector
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    networks:
+      - app-network
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    # ... rest of your config
+
+  worker-service:
+    build:
+      context: ./backend/worker-service
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3002"
+    depends_on:
+      - data-collector
+    networks:
+      - app-network
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    # ... rest of your config 
+
+networks:
+  app-network:
+    driver: bridge 
