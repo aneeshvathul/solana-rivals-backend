@@ -1,2 +1,9 @@
 # env files (can opt-in for committing if needed)
 .env*
+
+node_modules/
+**/node_modules/
+**/**/node_modules/
+
+# Build directories
+**/dist/
